@@ -11,7 +11,10 @@
 // carries its inputs so the number can be re-derived by hand.
 //
 //   ratio      = median(mcap/tvl) of the category's comparables, clamped to [0.02, 3]
-//                (global median when the category has fewer than 3 comparables)
+//                (global median when the category has fewer than 3 comparables). A thin
+//                category's median, p25 and p75 are shrunk toward the global set with
+//                weight n/(n+3), so a category priced from three peers cannot claim a
+//                wild multiple on three observations; the shrinkage fades as n grows.
 //   momentum   = 1 + clamp(change_7d, -50, 100) / 100 * 0.35        (unreported: 1)
 //   age        = 0.85 + 0.15 * min(age_days, 1095) / 1095           (unknown age: 365 days)
 //   chains     = 1 + 0.03 * min(max(chain_count - 1, 0), 10)
@@ -45,11 +48,12 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-export const MODEL_VERSION = 'comps-1';
+export const MODEL_VERSION = 'comps-2';
 
 /** The model's stated constants. Everything else is derived from the snapshot at run time. */
 export const CONSTANTS = {
   min_comparables: 3, // a category needs this many tokenized protocols before its own median is used
+  shrink_k: 3, // pseudo-count: a category's ratios are weighted n/(n+shrink_k) against the global set
   ratio_floor: 0.02,
   ratio_cap: 3,
   band_floor: 0.005,
@@ -145,8 +149,18 @@ function statsOf(ratios: number[]): RatioStats {
 export interface Comparables {
   global: RatioStats;
   byCategory: Map<string, RatioStats>;
-  /** Every category that has any comparable, for the methodology table. */
-  table: { category: string; n: number; median: number; p25: number; p75: number; used: boolean }[];
+  /**
+   * Every category that has any comparable, for the methodology table. median/p25/p75 are the
+   * ratios actually used for pricing (shrunk toward the global set); raw_median is the
+   * category's own unshrunk median, kept so the shrinkage is visible, never hidden.
+   */
+  table: { category: string; n: number; median: number; p25: number; p75: number; raw_median: number; used: boolean }[];
+}
+
+/** One ratio statistic pulled toward the global set by sample size: (n*own + k*global)/(n+k). */
+function shrunk(own: RatioStats, global: RatioStats, k: number): RatioStats {
+  const blend = (a: number, b: number): number => (own.n * a + k * b) / (own.n + k);
+  return { n: own.n, median: blend(own.median, global.median), p25: blend(own.p25, global.p25), p75: blend(own.p75, global.p75) };
 }
 
 export function buildComparables(snapshot: Snapshot, c: Constants = CONSTANTS): Comparables {
@@ -161,16 +175,26 @@ export function buildComparables(snapshot: Snapshot, c: Constants = CONSTANTS): 
     list.push(ratio);
     perCategory.set(key, list);
   }
+  const global = statsOf(all);
   const byCategory = new Map<string, RatioStats>();
   const table: Comparables['table'] = [];
   for (const [category, ratios] of perCategory) {
-    const stats = statsOf(ratios);
-    const used = stats.n >= c.min_comparables;
+    const raw = statsOf(ratios);
+    const used = raw.n >= c.min_comparables;
+    const stats = used ? shrunk(raw, global, c.shrink_k) : raw;
     if (used) byCategory.set(category, stats);
-    table.push({ category, n: stats.n, median: round4(stats.median), p25: round4(stats.p25), p75: round4(stats.p75), used });
+    table.push({
+      category,
+      n: raw.n,
+      median: round4(stats.median),
+      p25: round4(stats.p25),
+      p75: round4(stats.p75),
+      raw_median: round4(raw.median),
+      used,
+    });
   }
   table.sort((a, b) => b.n - a.n || (a.category < b.category ? -1 : 1));
-  return { global: statsOf(all), byCategory, table };
+  return { global, byCategory, table };
 }
 
 /** The ratio set one candidate is priced with: its category's when it has one, else the global set. */

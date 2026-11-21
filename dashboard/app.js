@@ -346,6 +346,37 @@
     });
   }
 
+  // ---------------------------------------------------------- top picks
+  // One analyst line per pick: the price first, then whichever fact about the row stands out.
+  function whyLine(row) {
+    var g = DATA.global_ratio.median;
+    var head = row.ratio >= g * 1.5
+      ? 'Priced rich at ' + fmtRatio(row.ratio) + 'x TVL'
+      : fmtUsd(row.tvl_usd) + ' TVL at ' + fmtRatio(row.ratio) + 'x';
+    var tail;
+    if (row.growth_reported && row.change_7d >= 4) tail = 'growing ' + fmtPct(row.change_7d) + ' in 7 days';
+    else if (row.growth_reported && row.change_7d <= -8) tail = 'on a dip, ' + fmtPct(row.change_7d) + ' in 7 days';
+    else if ((row.chains || []).length >= 8) tail = 'across ' + row.chains.length + ' chains';
+    else if (row.age_days !== null && row.age_days !== undefined && row.age_days >= 730) tail = fmtAge(row.age_days) + ' on record';
+    else tail = fmtAge(row.age_days) + ' on record, ' + (row.chains || []).length + ' chains';
+    return head + ', ' + tail + '.';
+  }
+
+  function topPicks() {
+    var picks = DATA.rows.slice(0, 5);
+    return el('section', { class: 'picks', 'aria-label': 'Top five picks' },
+      el('h2', { class: 'picks-h', text: 'Top picks — where the radar points first' }),
+      el('div', { class: 'pick-grid' }, picks.map(function (r) {
+        return el('button', { type: 'button', class: 'pick', onclick: function () { openDetail(r.slug); } },
+          el('span', { class: 'rk', text: '#' + r.rank + (r.on_watchlist ? ' · watchlist' : ' · early') }),
+          el('b', { text: r.name }),
+          el('span', { class: 'pv num', text: fmtUsd(r.implied_value_usd) }),
+          el('span', { class: 'why', text: whyLine(r) })
+        );
+      }))
+    );
+  }
+
   // ---------------------------------------------------------- header, lede, controls
   function header() {
     return el('header', { class: 'top' },
@@ -466,7 +497,7 @@
         onclick: function () { openDetail(r.slug); },
         onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
       },
-        el('td', { class: 'rank', text: String(r.rank) }),
+        el('td', { class: 'rank' + (r.rank <= 3 ? ' m' + r.rank : ''), text: String(r.rank) }),
         el('td', null, el('div', { class: 'name' },
           el('span', { class: 'row1' },
             el('b', { text: r.name }),
@@ -546,7 +577,8 @@
     var g = DATA.global_ratio;
     var formula = [
       'ratio      = median(mcap / TVL) of the category\'s tokenized comparables, clamped to [0.02, 3]',
-      '             (the global median when the category has fewer than ' + C.min_comparables + ' comparables)',
+      '             (the global median when the category has fewer than ' + C.min_comparables + ' comparables;',
+      '             a thin category\'s ratios are shrunk toward the global set, weight n/(n+' + C.shrink_k + '))',
       'momentum   = 1 + clamp(change_7d, ' + C.momentum_floor_pct + ', ' + C.momentum_cap_pct + ') / 100 x ' + C.momentum_weight + '   (unreported: 1)',
       'age        = ' + C.age_base + ' + ' + C.age_range + ' x min(age_days, ' + C.age_full_days + ') / ' + C.age_full_days + '   (unknown age: ' + C.unknown_age_days + ' days)',
       'chains     = 1 + ' + C.chain_step + ' x min(max(chain_count - 1, 0), ' + C.chain_cap + ')',
@@ -557,7 +589,7 @@
       return el('tr', null,
         el('td', { text: t.category }),
         el('td', { class: 'num', text: String(t.n) }),
-        el('td', { class: 'num', text: fmtRatio(t.median) }),
+        el('td', { class: 'num', text: fmtRatio(t.median) + (t.used && t.raw_median !== t.median ? ' (raw ' + fmtRatio(t.raw_median) + ')' : '') }),
         el('td', { class: 'num', text: fmtRatio(t.p25) }),
         el('td', { class: 'num', text: fmtRatio(t.p75) }),
         el('td', { class: t.used ? 'used' : 'fallback', text: t.used ? 'category median' : 'global median' })
@@ -588,6 +620,11 @@
           el('tbody', null, ratioRows)
         )
       ),
+      el('p', null,
+        'The table shows the ratios actually used for pricing. Where a category\'s own median rests on few comparables it is ',
+        el('b', { text: 'shrunk toward the global median' }),
+        ' with weight n/(n+' + C.shrink_k + ') — the raw median is shown beside it — so three peers cannot hand a whole category an extreme multiple. The shrinkage fades as the comparable count grows.'
+      ),
       el('h3', { text: 'Who gets ranked' }),
       el('ul', null,
         el('li', null, el('b', { text: 'The watchlist is the floor. ' }), 'All ' + DATA.watchlist_size + ' watchlist protocols are on the board. The other ' + DATA.early_size + ' rows are every remaining protocol in the snapshot that records no token on DefiLlama and passes the same screen the watchlist uses.'),
@@ -602,7 +639,7 @@
       el('ul', null,
         el('li', null, el('b', { text: '"Records no token" is a record, not a fact. ' }), 'It means DefiLlama carries no market cap, CoinGecko id or symbol for the protocol in this snapshot. A protocol may still have a token its record does not carry.'),
         el('li', null, el('b', { text: 'Implied value is this entry\'s model claim. ' }), 'It prices a hypothetical token as if the protocol\'s record stayed as it is. It does not predict whether or when a token is issued, and it is not financial advice.'),
-        el('li', null, el('b', { text: 'Small samples are noisy. ' }), 'Category medians rest on as few as ' + C.min_comparables + ' comparables; the band beside each value shows how wide the middle half of those peers is. Momentum uses seven days of TVL change only.'),
+        el('li', null, el('b', { text: 'Small samples are noisy. ' }), 'Category medians rest on as few as ' + C.min_comparables + ' comparables; shrinkage toward the global median (weight n/(n+' + C.shrink_k + ')) keeps a thin set from pricing a whole category, and the band beside each value shows how wide the middle half of those peers is. Momentum uses seven days of TVL change only.'),
         el('li', null, el('b', { text: 'The snapshot is frozen. ' }), 'All figures are as of ' + DATA.as_of + ' (' + DATA.source + '). Nothing here updates.')
       )
     );
@@ -618,6 +655,21 @@
     return Math.round((below / DATA.rows.length) * 100);
   }
 
+  // Risks read off the row's own record: thin peer sets, wide bands, missing or falling
+  // momentum, short history, single-chain concentration. At most three, then the record caveat.
+  function risksOf(row, band) {
+    var out = [];
+    if (row.ratio_source === 'category' && row.ratio_n < 6) out.push('Thin peer set: priced from only ' + row.ratio_n + ' tokenized comparables (shrunk toward the global median), so treat the point estimate as soft.');
+    if (band.high / Math.max(1, band.low) >= 10) out.push('Wide peer band: the middle half of peers spans ' + fmtUsd(band.low) + ' to ' + fmtUsd(band.high) + ' — the band is the honest number, not the point.');
+    if (!row.growth_reported) out.push('Momentum unknown: seven-day TVL change is unreported, so the model assumes it is neutral rather than guessing.');
+    if (row.growth_reported && row.change_7d <= -10) out.push('Falling TVL: down ' + fmtPct(row.change_7d) + ' in seven days. Momentum already cuts the estimate; a continued slide would cut it further.');
+    if (row.age_days !== null && row.age_days !== undefined && row.age_days < 180) out.push('Short track record: listed ' + fmtAge(row.age_days) + ' ago. Young protocols fail more often than the age factor alone prices in.');
+    if ((row.chains || []).length <= 1) out.push('Single chain: all TVL sits on one chain, a concentration the chain factor (x1.00) does not reward.');
+    out = out.slice(0, 3);
+    out.push('"Records no token" is a DefiLlama record, not proof: a token may exist that this snapshot does not carry, and no launch is predicted or promised.');
+    return out;
+  }
+
   function openDetail(slug) {
     var row = null;
     DATA.rows.forEach(function (r) { if (r.slug === slug) row = r; });
@@ -631,7 +683,7 @@
     var steps = farmStepsOf(row);
     var stats = ratioStatsOf(row);
     var ratioNote = row.ratio_source === 'category'
-      ? 'the ' + (row.category || 'Other') + ' median from ' + row.ratio_n + ' tokenized comparables'
+      ? 'the ' + (row.category || 'Other') + ' median from ' + row.ratio_n + ' tokenized comparables, shrunk toward the global median by sample size'
       : 'the global median from ' + row.ratio_n + ' tokenized comparables (its category has fewer than ' + C.min_comparables + ')';
     var momentumNote = row.growth_reported
       ? 'Seven-day TVL change of ' + fmtPct(row.change_7d) + ' moves the estimate to x' + m.momentum + '.'
@@ -677,6 +729,10 @@
       )
     ));
     dialog.appendChild(el('section', { class: 'dsec' },
+      el('h3', { text: 'Risks and caveats' }),
+      el('ul', { class: 'risks' }, risksOf(row, band).map(function (t) { return el('li', { text: t }); }))
+    ));
+    dialog.appendChild(el('section', { class: 'dsec' },
       el('h3', { text: 'Farm plan' }),
       el('ol', { class: 'steps' }, steps.map(function (s) {
         var at = s.indexOf(' Cost: ');
@@ -698,6 +754,7 @@
     var shell = el('div', { class: 'shell' });
     shell.appendChild(header());
     shell.appendChild(lede());
+    if (state.tab === 'board') shell.appendChild(topPicks());
     shell.appendChild(controls());
     if (state.tab === 'live') shell.appendChild(liveTable());
     else if (state.tab === 'method') shell.appendChild(methodView());
